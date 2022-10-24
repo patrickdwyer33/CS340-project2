@@ -2,14 +2,12 @@ from streamer import Streamer
 import sys
 import lossy_socket
 
-NUMS = 20
+NUMS = 15
 
 
 def receive(s):
     expected = 0
     str_buf = ""
-    s.rec_seq_num = 0
-    s.send_seq_num = 0
 
     while expected < NUMS:
         data = s.recv()
@@ -67,7 +65,7 @@ def host2(listen_port, remote_port):
 
 
 def main():
-    lossy_socket.sim = lossy_socket.SimulationParams(loss_rate=0.1, corruption_rate=0.0,
+    lossy_socket.sim = lossy_socket.SimulationParams(loss_rate=0.1, corruption_rate=0.1,
                                                      max_delivery_delay=0.1,
                                                      become_reliable_after=100000.0)
 

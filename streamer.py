@@ -2,6 +2,7 @@ import struct
 from concurrent.futures import ThreadPoolExecutor
 import time
 import sys
+import hashlib
 # do not import anything else from loss_socket besides LossyUDP
 from lossy_socket import LossyUDP
 # do not import anything else from socket except INADDR_ANY
@@ -23,6 +24,7 @@ class Streamer:
         self.closed = False
         self.ack = False
         self.fin = False
+        self.header_length = 24
         executor = ThreadPoolExecutor(max_workers=1)
         executor.submit(self.listener)
 
@@ -32,6 +34,12 @@ class Streamer:
                 data, addr = self.socket.recvfrom()
                 header = struct.unpack('q', data[:8])
                 value = header[0]
+                msg_hash = data[8:24]
+                packet_data = data[:8]
+                if len(data) > self.header_length:
+                    packet_data = packet_data + data[24:]
+                if hashlib.md5(packet_data).digest() != msg_hash:
+                    continue
                 if value == -1:
                     self.ack = True
                     continue
@@ -40,19 +48,21 @@ class Streamer:
                     self.fin = True
                     continue
                 if self.buffer.get(value, None) is None:
-                    self.buffer[value] = data[8:]
+                    self.buffer[value] = data[self.header_length:]
             except Exception as e:
                 print("listener died!")
                 print(e)
 
     def send(self, data_bytes: bytes) -> None:
-        header_length = 8
-        max_msg_size = 1472 - header_length
+        max_msg_size = 1472 - self.header_length
         msg_size = len(data_bytes)
         messages = []
         before_send_seq_num = self.send_seq_num
         if msg_size <= max_msg_size:
             header = struct.pack('q', self.send_seq_num)
+            pre_hash_msg = header+data_bytes
+            msg_hash = hashlib.md5(pre_hash_msg).digest()
+            header = header+msg_hash
             msg = header+data_bytes
             messages.append(msg)
             self.send_seq_num = self.send_seq_num + 1
@@ -60,23 +70,34 @@ class Streamer:
             rest = data_bytes[max_msg_size:]
             msg_data = data_bytes[:max_msg_size]
             header = struct.pack('q', self.send_seq_num)
+            pre_hash_msg = header + msg_data
+            msg_hash = hashlib.md5(pre_hash_msg).digest()
+            header = header + msg_hash
             msg = header+msg_data
             messages.append(msg)
             self.send_seq_num = self.send_seq_num + 1
             while len(rest) > max_msg_size:
                 msg_data = rest[:max_msg_size]
                 header = struct.pack('q', self.send_seq_num)
+                pre_hash_msg = header + msg_data
+                msg_hash = hashlib.md5(pre_hash_msg).digest()
+                header = header + msg_hash
                 msg = header+msg_data
                 messages.append(msg)
                 self.send_seq_num = self.send_seq_num + 1
                 rest = rest[max_msg_size:]
             if len(rest) > 0:
+                msg_data = rest
                 header = struct.pack('q', self.send_seq_num)
-                msg = header+rest
+                pre_hash_msg = header + msg_data
+                msg_hash = hashlib.md5(pre_hash_msg).digest()
+                header = header + msg_hash
+                msg = header+msg_data
                 messages.append(msg)
                 self.send_seq_num = self.send_seq_num + 1
         for msg in messages:
             self.socket.sendto(msg, (self.dst_ip, self.dst_port))
+        time.sleep(0.01)
         init_time = time.time()
         while time.time() - init_time < 0.25:
             time.sleep(0.01)
@@ -88,10 +109,14 @@ class Streamer:
 
     def send_ack(self) -> None:
         msg = struct.pack('q', -1)
+        msg_hash = hashlib.md5(msg).digest()
+        msg = msg + msg_hash
         self.socket.sendto(msg, (self.dst_ip, self.dst_port))
 
     def send_fin(self) -> None:
         msg = struct.pack('q', -2)
+        msg_hash = hashlib.md5(msg).digest()
+        msg = msg + msg_hash
         self.socket.sendto(msg, (self.dst_ip, self.dst_port))
 
     def recv(self) -> bytes:
