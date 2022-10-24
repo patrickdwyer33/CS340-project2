@@ -30,8 +30,19 @@ class Streamer:
 
     def listener(self) -> None:
         while not self.closed:
+            if self.buffer:
+                min_seq_num_in_buffer = min(self.buffer.keys())
+                while min_seq_num_in_buffer < self.rec_seq_num:
+                    del self.buffer[min_seq_num_in_buffer]
+                    self.send_ack()
+                    if self.buffer:
+                        min_seq_num_in_buffer = min(self.buffer.keys())
+                    else:
+                        break
             try:
                 data, addr = self.socket.recvfrom()
+                if data == b'':
+                    continue
                 header = struct.unpack('q', data[:8])
                 value = header[0]
                 msg_hash = data[8:24]
@@ -39,15 +50,13 @@ class Streamer:
                 if len(data) > self.header_length:
                     packet_data = packet_data + data[24:]
                 if hashlib.md5(packet_data).digest() != msg_hash:
-                    continue
-                if value == -1:
+                    pass
+                elif value == -1:
                     self.ack = True
-                    continue
-                if value == -2:
+                elif value == -2:
                     self.send_ack()
                     self.fin = True
-                    continue
-                if self.buffer.get(value, None) is None:
+                elif self.buffer.get(value, None) is None:
                     self.buffer[value] = data[self.header_length:]
             except Exception as e:
                 print("listener died!")
@@ -62,8 +71,8 @@ class Streamer:
             header = struct.pack('q', self.send_seq_num)
             pre_hash_msg = header+data_bytes
             msg_hash = hashlib.md5(pre_hash_msg).digest()
-            header = header+msg_hash
-            msg = header+data_bytes
+            header = header + msg_hash
+            msg = header + data_bytes
             messages.append(msg)
             self.send_seq_num = self.send_seq_num + 1
         else:
@@ -73,7 +82,7 @@ class Streamer:
             pre_hash_msg = header + msg_data
             msg_hash = hashlib.md5(pre_hash_msg).digest()
             header = header + msg_hash
-            msg = header+msg_data
+            msg = header + msg_data
             messages.append(msg)
             self.send_seq_num = self.send_seq_num + 1
             while len(rest) > max_msg_size:
@@ -82,7 +91,7 @@ class Streamer:
                 pre_hash_msg = header + msg_data
                 msg_hash = hashlib.md5(pre_hash_msg).digest()
                 header = header + msg_hash
-                msg = header+msg_data
+                msg = header + msg_data
                 messages.append(msg)
                 self.send_seq_num = self.send_seq_num + 1
                 rest = rest[max_msg_size:]
@@ -92,20 +101,21 @@ class Streamer:
                 pre_hash_msg = header + msg_data
                 msg_hash = hashlib.md5(pre_hash_msg).digest()
                 header = header + msg_hash
-                msg = header+msg_data
+                msg = header + msg_data
                 messages.append(msg)
                 self.send_seq_num = self.send_seq_num + 1
         for msg in messages:
-            self.socket.sendto(msg, (self.dst_ip, self.dst_port))
-        time.sleep(0.01)
+            self.send_msg(msg)
+
+    def send_msg(self, msg_data: bytes) -> None:
+        self.socket.sendto(msg_data, (self.dst_ip, self.dst_port))
         init_time = time.time()
         while time.time() - init_time < 0.25:
             time.sleep(0.01)
             if self.ack:
                 self.ack = False
                 return
-        self.send_seq_num = before_send_seq_num
-        self.send(data_bytes)
+        self.send_msg(msg_data)
 
     def send_ack(self) -> None:
         msg = struct.pack('q', -1)
@@ -124,17 +134,7 @@ class Streamer:
         while not self.buffer:
             time.sleep(0.01)
         while self.buffer.get(self.rec_seq_num, None) is None:
-            if self.buffer:
-                min_seq_num_in_buffer = min(self.buffer.keys())
-                while min_seq_num_in_buffer < self.rec_seq_num:
-                    del self.buffer[min_seq_num_in_buffer]
-                    self.send_ack()
-                    if self.buffer:
-                        min_seq_num_in_buffer = min(self.buffer.keys())
-                    else:
-                        break
-            else:
-                time.sleep(0.01)
+            time.sleep(0.01)
         data_to_return = self.buffer[self.rec_seq_num]
         del self.buffer[self.rec_seq_num]
         self.rec_seq_num = self.rec_seq_num + 1
@@ -146,22 +146,38 @@ class Streamer:
             self.rec_seq_num = self.rec_seq_num + 1
         return data_to_return
 
-    def close(self) -> None:
-        """Cleans up. It should block (wait) until the Streamer is done with all
-           the necessary ACKs and retransmissions"""
-        # maybe wait here for part 5
+    def close_helper(self) -> None:
         self.send_fin()
         init_time = time.time()
         while time.time() - init_time < 0.25:
             if self.ack:
-                return
+                break
+            time.sleep(0.01)
         if not self.ack:
             self.close()
         while not self.fin:
             time.sleep(0.01)
-        time.sleep(2)
-        self.closed = True
+        time.sleep(30)
         self.socket.stoprecv()
-        sys.exit(0)
+        self.closed = True
+
+    def close(self) -> None:
+        """Cleans up. It should block (wait) until the Streamer is done with all
+           the necessary ACKs and retransmissions"""
+        # maybe wait here for part 5
+        self.ack = False
+        self.send_fin()
+        init_time = time.time()
+        while time.time() - init_time < 0.25:
+            if self.ack:
+                break
+            time.sleep(0.01)
+        if not self.ack:
+            self.close_helper()
+        while not self.fin:
+            time.sleep(0.01)
+        time.sleep(2)
+        self.socket.stoprecv()
+        self.closed = True
 
 

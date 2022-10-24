@@ -5,7 +5,7 @@ from time import sleep, time
 from typing import Tuple
 
 # constant seed makes the random number generator deterministic during testing
-random.seed(398120)
+# random.seed(398120)
 
 
 class SimulationParams:
@@ -19,6 +19,7 @@ class SimulationParams:
 
     def forced_reliable(self) -> bool:
         return time() - self.start_time > self.become_reliable_after
+
 
 class SimulationStats:
     def __init__(self):
